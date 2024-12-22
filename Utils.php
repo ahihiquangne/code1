@@ -1,233 +1,171 @@
-<?php
-namespace JmesPath;
+<?php declare(strict_types=1);
 
-class Utils
+/*
+ * This file is part of the Monolog package.
+ *
+ * (c) Jordi Boggiano <j.boggiano@seld.be>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Monolog;
+
+final class Utils
 {
-    public static $typeMap = [
-        'boolean' => 'boolean',
-        'string'  => 'string',
-        'NULL'    => 'null',
-        'double'  => 'number',
-        'float'   => 'number',
-        'integer' => 'number'
-    ];
+    const DEFAULT_JSON_FLAGS = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION;
 
     /**
-     * Returns true if the value is truthy
-     *
-     * @param mixed $value Value to check
-     *
-     * @return bool
+     * @internal
      */
-    public static function isTruthy($value)
+    public static function getClass($object): string
     {
-        if (!$value) {
-            return $value === 0 || $value === '0';
-        } elseif ($value instanceof \stdClass) {
-            return (bool) get_object_vars($value);
-        } else {
-            return true;
+        $class = \get_class($object);
+
+        return 'c' === $class[0] && 0 === strpos($class, "class@anonymous\0") ? get_parent_class($class).'@anonymous' : $class;
+    }
+
+    public static function substr(string $string, int $start, ?int $length = null)
+    {
+        if (extension_loaded('mbstring')) {
+            return mb_strcut($string, $start, $length);
         }
+
+        return substr($string, $start, $length);
     }
 
     /**
-     * Gets the JMESPath type equivalent of a PHP variable.
+     * Return the JSON representation of a value
      *
-     * @param mixed $arg PHP variable
-     * @return string Returns the JSON data type
-     * @throws \InvalidArgumentException when an unknown type is given.
+     * @param  mixed             $data
+     * @param  int               $encodeFlags flags to pass to json encode, defaults to JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+     * @param  bool              $ignoreErrors whether to ignore encoding errors or to throw on error, when ignored and the encoding fails, "null" is returned which is valid json for null
+     * @throws \RuntimeException if encoding fails and errors are not ignored
+     * @return string when errors are ignored and the encoding fails, "null" is returned which is valid json for null
      */
-    public static function type($arg)
+    public static function jsonEncode($data, ?int $encodeFlags = null, bool $ignoreErrors = false): string
     {
-        $type = gettype($arg);
-        if (isset(self::$typeMap[$type])) {
-            return self::$typeMap[$type];
-        } elseif ($type === 'array') {
-            if (empty($arg)) {
-                return 'array';
+        if (null === $encodeFlags) {
+            $encodeFlags = self::DEFAULT_JSON_FLAGS;
+        }
+
+        if ($ignoreErrors) {
+            $json = @json_encode($data, $encodeFlags);
+            if (false === $json) {
+                return 'null';
             }
-            reset($arg);
-            return key($arg) === 0 ? 'array' : 'object';
-        } elseif ($arg instanceof \stdClass) {
-            return 'object';
-        } elseif ($arg instanceof \Closure) {
-            return 'expression';
-        } elseif ($arg instanceof \ArrayAccess
-            && $arg instanceof \Countable
-        ) {
-            return count($arg) == 0 || $arg->offsetExists(0)
-                ? 'array'
-                : 'object';
-        } elseif (method_exists($arg, '__toString')) {
-            return 'string';
+
+            return $json;
         }
 
-        throw new \InvalidArgumentException(
-            'Unable to determine JMESPath type from ' . get_class($arg)
-        );
+        $json = json_encode($data, $encodeFlags);
+        if (false === $json) {
+            $json = self::handleJsonError(json_last_error(), $data);
+        }
+
+        return $json;
     }
 
     /**
-     * Determine if the provided value is a JMESPath compatible object.
+     * Handle a json_encode failure.
      *
-     * @param mixed $value
+     * If the failure is due to invalid string encoding, try to clean the
+     * input and encode again. If the second encoding attempt fails, the
+     * inital error is not encoding related or the input can't be cleaned then
+     * raise a descriptive exception.
      *
-     * @return bool
+     * @param  int               $code return code of json_last_error function
+     * @param  mixed             $data data that was meant to be encoded
+     * @param  int               $encodeFlags flags to pass to json encode, defaults to JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION
+     * @throws \RuntimeException if failure can't be corrected
+     * @return string            JSON encoded data after error correction
      */
-    public static function isObject($value)
+    public static function handleJsonError(int $code, $data, ?int $encodeFlags = null): string
     {
-        if (is_array($value)) {
-            return !$value || array_keys($value)[0] !== 0;
+        if ($code !== JSON_ERROR_UTF8) {
+            self::throwEncodeError($code, $data);
         }
 
-        // Handle array-like values. Must be empty or offset 0 does not exist
-        return $value instanceof \Countable && $value instanceof \ArrayAccess
-            ? count($value) == 0 || !$value->offsetExists(0)
-            : $value instanceof \stdClass;
-    }
-
-    /**
-     * Determine if the provided value is a JMESPath compatible array.
-     *
-     * @param mixed $value
-     *
-     * @return bool
-     */
-    public static function isArray($value)
-    {
-        if (is_array($value)) {
-            return !$value || array_keys($value)[0] === 0;
-        }
-
-        // Handle array-like values. Must be empty or offset 0 exists.
-        return $value instanceof \Countable && $value instanceof \ArrayAccess
-            ? count($value) == 0 || $value->offsetExists(0)
-            : false;
-    }
-
-    /**
-     * JSON aware value comparison function.
-     *
-     * @param mixed $a First value to compare
-     * @param mixed $b Second value to compare
-     *
-     * @return bool
-     */
-    public static function isEqual($a, $b)
-    {
-        if ($a === $b) {
-            return true;
-        } elseif ($a instanceof \stdClass) {
-            return self::isEqual((array) $a, $b);
-        } elseif ($b instanceof \stdClass) {
-            return self::isEqual($a, (array) $b);
+        if (is_string($data)) {
+            self::detectAndCleanUtf8($data);
+        } elseif (is_array($data)) {
+            array_walk_recursive($data, array('Monolog\Utils', 'detectAndCleanUtf8'));
         } else {
-            return false;
+            self::throwEncodeError($code, $data);
         }
+
+        if (null === $encodeFlags) {
+            $encodeFlags = self::DEFAULT_JSON_FLAGS;
+        }
+
+        $json = json_encode($data, $encodeFlags);
+
+        if ($json === false) {
+            self::throwEncodeError(json_last_error(), $data);
+        }
+
+        return $json;
     }
 
     /**
-     * JMESPath requires a stable sorting algorithm, so here we'll implement
-     * a simple Schwartzian transform that uses array index positions as tie
-     * breakers.
+     * Throws an exception according to a given code with a customized message
      *
-     * @param array    $data   List or map of data to sort
-     * @param callable $sortFn Callable used to sort values
-     *
-     * @return array Returns the sorted array
-     * @link http://en.wikipedia.org/wiki/Schwartzian_transform
+     * @param  int               $code return code of json_last_error function
+     * @param  mixed             $data data that was meant to be encoded
+     * @throws \RuntimeException
      */
-    public static function stableSort(array $data, callable $sortFn)
+    private static function throwEncodeError(int $code, $data)
     {
-        // Decorate each item by creating an array of [value, index]
-        array_walk($data, function (&$v, $k) {
-            $v = [$v, $k];
-        });
-        // Sort by the sort function and use the index as a tie-breaker
-        uasort($data, function ($a, $b) use ($sortFn) {
-            return $sortFn($a[0], $b[0]) ?: ($a[1] < $b[1] ? -1 : 1);
-        });
+        switch ($code) {
+            case JSON_ERROR_DEPTH:
+                $msg = 'Maximum stack depth exceeded';
+                break;
+            case JSON_ERROR_STATE_MISMATCH:
+                $msg = 'Underflow or the modes mismatch';
+                break;
+            case JSON_ERROR_CTRL_CHAR:
+                $msg = 'Unexpected control character found';
+                break;
+            case JSON_ERROR_UTF8:
+                $msg = 'Malformed UTF-8 characters, possibly incorrectly encoded';
+                break;
+            default:
+                $msg = 'Unknown error';
+        }
 
-        // Undecorate each item and return the resulting sorted array
-        return array_map(function ($v) {
-            return $v[0];
-        }, array_values($data));
+        throw new \RuntimeException('JSON encoding failed: '.$msg.'. Encoding: '.var_export($data, true));
     }
 
     /**
-     * Creates a Python-style slice of a string or array.
+     * Detect invalid UTF-8 string characters and convert to valid UTF-8.
      *
-     * @param array|string $value Value to slice
-     * @param int|null     $start Starting position
-     * @param int|null     $stop  Stop position
-     * @param int          $step  Step (1, 2, -1, -2, etc.)
+     * Valid UTF-8 input will be left unmodified, but strings containing
+     * invalid UTF-8 codepoints will be reencoded as UTF-8 with an assumed
+     * original encoding of ISO-8859-15. This conversion may result in
+     * incorrect output if the actual encoding was not ISO-8859-15, but it
+     * will be clean UTF-8 output and will not rely on expensive and fragile
+     * detection algorithms.
      *
-     * @return array|string
-     * @throws \InvalidArgumentException
+     * Function converts the input in place in the passed variable so that it
+     * can be used as a callback for array_walk_recursive.
+     *
+     * @param mixed &$data Input to check and convert if needed
      */
-    public static function slice($value, $start = null, $stop = null, $step = 1)
+    private static function detectAndCleanUtf8(&$data)
     {
-        if (!is_array($value) && !is_string($value)) {
-            throw new \InvalidArgumentException('Expects string or array');
+        if (is_string($data) && !preg_match('//u', $data)) {
+            $data = preg_replace_callback(
+                '/[\x80-\xFF]+/',
+                function ($m) {
+                    return utf8_encode($m[0]);
+                },
+                $data
+            );
+            $data = str_replace(
+                ['¤', '¦', '¨', '´', '¸', '¼', '½', '¾'],
+                ['€', 'Š', 'š', 'Ž', 'ž', 'Œ', 'œ', 'Ÿ'],
+                $data
+            );
         }
-
-        return self::sliceIndices($value, $start, $stop, $step);
-    }
-
-    private static function adjustEndpoint($length, $endpoint, $step)
-    {
-        if ($endpoint < 0) {
-            $endpoint += $length;
-            if ($endpoint < 0) {
-                $endpoint = $step < 0 ? -1 : 0;
-            }
-        } elseif ($endpoint >= $length) {
-            $endpoint = $step < 0 ? $length - 1 : $length;
-        }
-
-        return $endpoint;
-    }
-
-    private static function adjustSlice($length, $start, $stop, $step)
-    {
-        if ($step === null) {
-            $step = 1;
-        } elseif ($step === 0) {
-            throw new \RuntimeException('step cannot be 0');
-        }
-
-        if ($start === null) {
-            $start = $step < 0 ? $length - 1 : 0;
-        } else {
-            $start = self::adjustEndpoint($length, $start, $step);
-        }
-
-        if ($stop === null) {
-            $stop = $step < 0 ? -1 : $length;
-        } else {
-            $stop = self::adjustEndpoint($length, $stop, $step);
-        }
-
-        return [$start, $stop, $step];
-    }
-
-    private static function sliceIndices($subject, $start, $stop, $step)
-    {
-        $type = gettype($subject);
-        $len = $type == 'string' ? mb_strlen($subject, 'UTF-8') : count($subject);
-        list($start, $stop, $step) = self::adjustSlice($len, $start, $stop, $step);
-
-        $result = [];
-        if ($step > 0) {
-            for ($i = $start; $i < $stop; $i += $step) {
-                $result[] = $subject[$i];
-            }
-        } else {
-            for ($i = $start; $i > $stop; $i += $step) {
-                $result[] = $subject[$i];
-            }
-        }
-
-        return $type == 'string' ? implode('', $result) : $result;
     }
 }
