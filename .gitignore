@@ -1,5 +1,6 @@
-vendor
+/vendor
+composer.phar
 composer.lock
-phpunit.xml
-compiled
-artifacts/
+.DS_Store
+coverage.xml
+.phpunit.result.cache

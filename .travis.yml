@@ -1,31 +1,26 @@
 language: php
 
-matrix:
-  include:
-    - php: 5.4
-      dist: trusty
-    - php: 5.5
-      dist: trusty
-    - php: 5.6
-      dist: trusty
-    - php: 7.0
-      dist: trusty
-    - php: 7.1
-      dist: bionic
-    - php: 7.2
-      dist: bionic
-    - php: 7.3
-      dist: bionic
-    - php: 7.4
-      dist: bionic
-    - php: hhvm-3.18
-      dist: trusty
+php:
+  - 7.1
+  - 7.2
 
-install: travis_retry composer install
+before_script:
+  - composer self-update
+  - composer install --prefer-source --no-interaction
 
-script: make test
+script: 
+- vendor/bin/phpunit --coverage-clover=coverage.xml
 
-after_script:
-  - make perf
-  - JP_PHP_COMPILE=on make perf
-  - JP_PHP_COMPILE=on CACHE=on make perf
+after_success:
+# Submit coverage report to https://codecov.io
+- bash <(curl -s https://codecov.io/bash)
+
+# Monitor only these branches
+branches:
+  only:
+  - master
+
+# You can delete the cache using travis-ci web interface
+cache:
+  directories:
+  - $HOME/.composer/cache
